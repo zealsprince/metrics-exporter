@@ -135,9 +135,6 @@ local function export_state(command)
     math.floor(timestamp % 60)                              -- Second
   )
 
-  -- Print summary to console/logs
-  game.print("[METRIC_EXPORTER] Exporting metrics at tick " .. timestamp)
-
   -- Optionally write to organized files
   if EXPORT_TO_FILE then
     local base_folder = "metrics-exporter/"
@@ -217,10 +214,6 @@ local function export_state(command)
     -- Export metadata/summary
     helpers.write_file(base_folder .. "metadata/metadata_" .. timestamp .. ".json",
       helpers.table_to_json(metadata))
-
-    game.print("Metrics exported to metrics-exporter/ folder with " .. metadata.surfaces_count .. " surfaces")
-    game.print("Total entities: " ..
-      (metadata.total_entities.assembling_machines + metadata.total_entities.mining_drills + metadata.total_entities.generators + metadata.total_entities.labs))
   end
 end
 
