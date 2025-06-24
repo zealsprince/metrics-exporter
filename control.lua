@@ -20,7 +20,8 @@ local function get_comprehensive_factory_state()
         electric_poles = {},
         boilers = {},
         generators = {},
-        labs = {}
+        labs = {},
+        furnaces = {}
       },
       statistics = {
         pollution = surface.get_total_pollution(),
@@ -72,6 +73,20 @@ local function get_comprehensive_factory_state()
         name = entity.name,
         position = { x = entity.position.x, y = entity.position.y },
         status = tostring(entity.status)
+      })
+    end
+
+    -- Furnaces for smelting operations
+    for _, entity in pairs(surface.find_entities_filtered { type = "furnace" }) do
+      table.insert(surface_data.entities.furnaces, {
+        unit_number = entity.unit_number,
+        name = entity.name,
+        position = { x = entity.position.x, y = entity.position.y },
+        status = tostring(entity.status),
+        recipe = entity.get_recipe() and entity.get_recipe().name or nil,
+        productivity_bonus = entity.productivity_bonus,
+        speed_bonus = entity.speed_bonus,
+        energy_usage = entity.prototype.energy_usage
       })
     end
 
@@ -161,7 +176,8 @@ local function export_state(command)
         assembling_machines = 0,
         mining_drills = 0,
         generators = 0,
-        labs = 0
+        labs = 0,
+        furnaces = 0
       },
       forces = {}
     }
@@ -179,7 +195,8 @@ local function export_state(command)
           assembling_machines = #surface_data.entities.assembling_machines,
           mining_drills = #surface_data.entities.mining_drills,
           generators = #surface_data.entities.generators,
-          labs = #surface_data.entities.labs
+          labs = #surface_data.entities.labs,
+          furnaces = #surface_data.entities.furnaces
         }
       }
 
@@ -189,6 +206,7 @@ local function export_state(command)
           surface_summary.entity_counts.mining_drills
       metadata.total_entities.generators = metadata.total_entities.generators + surface_summary.entity_counts.generators
       metadata.total_entities.labs = metadata.total_entities.labs + surface_summary.entity_counts.labs
+      metadata.total_entities.furnaces = metadata.total_entities.furnaces + surface_summary.entity_counts.furnaces
       helpers.write_file(base_folder .. "surfaces/surface_" .. surface_name .. "_" .. padded_timestamp .. ".json",
         helpers.table_to_json(surface_summary))
       -- Individual entity type files - export entities array directly as root
@@ -212,6 +230,11 @@ local function export_state(command)
       if #surface_data.entities.labs > 0 then
         helpers.write_file(base_folder .. "labs/labs_" .. surface_name .. "_" .. padded_timestamp .. ".json",
           helpers.table_to_json(surface_data.entities.labs))
+      end
+
+      if #surface_data.entities.furnaces > 0 then
+        helpers.write_file(base_folder .. "furnaces/furnaces_" .. surface_name .. "_" .. padded_timestamp .. ".json",
+          helpers.table_to_json(surface_data.entities.furnaces))
       end
     end
 
