@@ -5,7 +5,7 @@ local EXPORT_TO_FILE = true           -- Set to true to write to script-output f
 local function get_comprehensive_factory_state()
   local state = {
     timestamp = game.tick,
-    game_time = math.floor(game.tick / 60),     -- Game time in seconds
+    game_time = math.floor(game.tick / 60), -- Game time in seconds
     surfaces = {}
   }
 
@@ -127,12 +127,12 @@ local function export_state(command)
   local state = get_comprehensive_factory_state()
   local timestamp = game.tick
   local iso_time = string.format("%04d-%02d-%02d_%02d-%02d-%02d",
-    2000 + math.floor(timestamp / (60 * 60 * 24 * 365)),        -- Rough year
-    math.floor((timestamp / (60 * 60 * 24 * 30)) % 12) + 1,     -- Rough month
-    math.floor((timestamp / (60 * 60 * 24)) % 30) + 1,          -- Rough day
-    math.floor((timestamp / (60 * 60)) % 24),                   -- Hour
-    math.floor((timestamp / 60) % 60),                          -- Minute
-    math.floor(timestamp % 60)                                  -- Second
+    2000 + math.floor(timestamp / (60 * 60 * 24 * 365)),    -- Rough year
+    math.floor((timestamp / (60 * 60 * 24 * 30)) % 12) + 1, -- Rough month
+    math.floor((timestamp / (60 * 60 * 24)) % 30) + 1,      -- Rough day
+    math.floor((timestamp / (60 * 60)) % 24),               -- Hour
+    math.floor((timestamp / 60) % 60),                      -- Minute
+    math.floor(timestamp % 60)                              -- Second
   )
 
   -- Print summary to console/logs
@@ -174,9 +174,9 @@ local function export_state(command)
       }
 
       metadata.total_entities.assembling_machines = metadata.total_entities.assembling_machines +
-      surface_summary.entity_counts.assembling_machines
+          surface_summary.entity_counts.assembling_machines
       metadata.total_entities.mining_drills = metadata.total_entities.mining_drills +
-      surface_summary.entity_counts.mining_drills
+          surface_summary.entity_counts.mining_drills
       metadata.total_entities.generators = metadata.total_entities.generators + surface_summary.entity_counts.generators
       metadata.total_entities.labs = metadata.total_entities.labs + surface_summary.entity_counts.labs
       helpers.write_file(base_folder .. "surfaces/surface_" .. surface_name .. "_" .. timestamp .. ".json",
@@ -220,18 +220,31 @@ local function export_state(command)
 
     game.print("Metrics exported to metrics-exporter/ folder with " .. metadata.surfaces_count .. " surfaces")
     game.print("Total entities: " ..
-    (metadata.total_entities.assembling_machines + metadata.total_entities.mining_drills + metadata.total_entities.generators + metadata.total_entities.labs))
+      (metadata.total_entities.assembling_machines + metadata.total_entities.mining_drills + metadata.total_entities.generators + metadata.total_entities.labs))
   end
 end
 
--- Automatic export every hour (server only)
-script.on_nth_tick(EXPORT_INTERVAL_TICKS, function(event)
-  export_state(nil)
+-- Function to register the periodic export handler
+local function register_export_handler()
+  script.on_nth_tick(EXPORT_INTERVAL_TICKS, function(event)
+    export_state(nil)
+  end)
+end
+
+-- Register event handlers on init (new game)
+script.on_init(function()
+  register_export_handler()
+end)
+
+-- Register event handlers on load (existing game)
+script.on_load(function()
+  -- Only re-setup event handlers - no game access allowed here!
+  register_export_handler()
 end)
 
 -- Add the command correctly, per the API
 commands.add_command(
-  "metrics-exporter",                              -- command name (no slash)
-  "Export comprehensive factory state as JSON.",   -- help text
-  export_state                                     -- function to call
+  "metrics-exporter",                            -- command name (no slash)
+  "Export comprehensive factory state as JSON.", -- help text
+  export_state                                   -- function to call
 )
