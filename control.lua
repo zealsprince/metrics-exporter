@@ -31,6 +31,7 @@ local function get_comprehensive_factory_state()
     -- Assembling machines
     for _, entity in pairs(surface.find_entities_filtered { type = "assembling-machine" }) do
       table.insert(surface_data.entities.assembling_machines, {
+        unit_number = entity.unit_number,
         name = entity.name,
         position = { x = entity.position.x, y = entity.position.y },
         recipe = entity.get_recipe() and entity.get_recipe().name or nil,
@@ -44,6 +45,7 @@ local function get_comprehensive_factory_state()
     -- Mining drills
     for _, entity in pairs(surface.find_entities_filtered { type = "mining-drill" }) do
       table.insert(surface_data.entities.mining_drills, {
+        unit_number = entity.unit_number,
         name = entity.name,
         position = { x = entity.position.x, y = entity.position.y },
         status = tostring(entity.status),
@@ -56,6 +58,7 @@ local function get_comprehensive_factory_state()
     -- Power generation
     for _, entity in pairs(surface.find_entities_filtered { type = "generator" }) do
       table.insert(surface_data.entities.generators, {
+        unit_number = entity.unit_number,
         name = entity.name,
         position = { x = entity.position.x, y = entity.position.y },
         status = tostring(entity.status)
@@ -65,6 +68,7 @@ local function get_comprehensive_factory_state()
     -- Labs for research progress
     for _, entity in pairs(surface.find_entities_filtered { type = "lab" }) do
       table.insert(surface_data.entities.labs, {
+        unit_number = entity.unit_number,
         name = entity.name,
         position = { x = entity.position.x, y = entity.position.y },
         status = tostring(entity.status)
@@ -126,23 +130,32 @@ local function export_state(command)
 
   local state = get_comprehensive_factory_state()
   local timestamp = game.tick
+  local padded_timestamp = string.format("%012d", timestamp) -- Zero-pad to 12 digits for long-term data collection
   local iso_time = string.format("%04d-%02d-%02d_%02d-%02d-%02d",
-    2000 + math.floor(timestamp / (60 * 60 * 24 * 365)),    -- Rough year
-    math.floor((timestamp / (60 * 60 * 24 * 30)) % 12) + 1, -- Rough month
-    math.floor((timestamp / (60 * 60 * 24)) % 30) + 1,      -- Rough day
-    math.floor((timestamp / (60 * 60)) % 24),               -- Hour
-    math.floor((timestamp / 60) % 60),                      -- Minute
-    math.floor(timestamp % 60)                              -- Second
+    2000 + math.floor(timestamp / (60 * 60 * 24 * 365)),     -- Rough year
+    math.floor((timestamp / (60 * 60 * 24 * 30)) % 12) + 1,  -- Rough month
+    math.floor((timestamp / (60 * 60 * 24)) % 30) + 1,       -- Rough day
+    math.floor((timestamp / (60 * 60)) % 24),                -- Hour
+    math.floor((timestamp / 60) % 60),                       -- Minute
+    math.floor(timestamp % 60)                               -- Second
   )
 
   -- Optionally write to organized files
   if EXPORT_TO_FILE then
-    local base_folder = "metrics-exporter/"
+    local world_exchange_string = game.get_map_exchange_string()
+    -- Create a simple hash of the world identifier for folder naming
+    local world_id = tostring(string.len(world_exchange_string))
+    for i = 1, string.len(world_exchange_string) do
+      world_id = world_id .. string.format("%02x", string.byte(world_exchange_string, i) % 256)
+      if string.len(world_id) >= 16 then break end -- Limit to reasonable length
+    end
+    local base_folder = "metrics-exporter/" .. world_id .. "/"
 
     -- Create metadata file with overall summary
     local metadata = {
       export_timestamp = timestamp,
       game_time_seconds = state.game_time,
+      world_identifier = world_exchange_string, -- Full world identifier stored in metadata
       surfaces_count = 0,
       total_entities = {
         assembling_machines = 0,
@@ -176,27 +189,28 @@ local function export_state(command)
           surface_summary.entity_counts.mining_drills
       metadata.total_entities.generators = metadata.total_entities.generators + surface_summary.entity_counts.generators
       metadata.total_entities.labs = metadata.total_entities.labs + surface_summary.entity_counts.labs
-      helpers.write_file(base_folder .. "surfaces/surface_" .. surface_name .. "_" .. timestamp .. ".json",
+      helpers.write_file(base_folder .. "surfaces/surface_" .. surface_name .. "_" .. padded_timestamp .. ".json",
         helpers.table_to_json(surface_summary))
       -- Individual entity type files - export entities array directly as root
       if #surface_data.entities.assembling_machines > 0 then
         helpers.write_file(
-          base_folder .. "assembling-machines/assembling_machines_" .. surface_name .. "_" .. timestamp .. ".json",
+          base_folder .. "assembling-machines/assembling_machines_" .. surface_name .. "_" .. padded_timestamp .. ".json",
           helpers.table_to_json(surface_data.entities.assembling_machines))
       end
 
       if #surface_data.entities.mining_drills > 0 then
-        helpers.write_file(base_folder .. "mining-drills/mining_drills_" .. surface_name .. "_" .. timestamp .. ".json",
+        helpers.write_file(
+          base_folder .. "mining-drills/mining_drills_" .. surface_name .. "_" .. padded_timestamp .. ".json",
           helpers.table_to_json(surface_data.entities.mining_drills))
       end
 
       if #surface_data.entities.generators > 0 then
-        helpers.write_file(base_folder .. "generators/generators_" .. surface_name .. "_" .. timestamp .. ".json",
+        helpers.write_file(base_folder .. "generators/generators_" .. surface_name .. "_" .. padded_timestamp .. ".json",
           helpers.table_to_json(surface_data.entities.generators))
       end
 
       if #surface_data.entities.labs > 0 then
-        helpers.write_file(base_folder .. "labs/labs_" .. surface_name .. "_" .. timestamp .. ".json",
+        helpers.write_file(base_folder .. "labs/labs_" .. surface_name .. "_" .. padded_timestamp .. ".json",
           helpers.table_to_json(surface_data.entities.labs))
       end
     end
@@ -208,11 +222,11 @@ local function export_state(command)
       evolution_factor = state.statistics.evolution_factor,
       forces = state.statistics.forces
     }
-    helpers.write_file(base_folder .. "research/research_" .. timestamp .. ".json",
+    helpers.write_file(base_folder .. "research/research_" .. padded_timestamp .. ".json",
       helpers.table_to_json(research_export))
 
     -- Export metadata/summary
-    helpers.write_file(base_folder .. "metadata/metadata_" .. timestamp .. ".json",
+    helpers.write_file(base_folder .. "metadata/metadata_" .. padded_timestamp .. ".json",
       helpers.table_to_json(metadata))
   end
 end
