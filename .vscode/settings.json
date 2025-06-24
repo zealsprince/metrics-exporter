@@ -1,0 +1,9 @@
+{
+    "[lua]": {
+        "editor.defaultFormatter": "sumneko.lua",
+        "editor.formatOnSave": true,
+        "editor.insertSpaces": true,
+        "editor.tabSize": 2,
+        "editor.trimAutoWhitespace": true
+    }
+}
