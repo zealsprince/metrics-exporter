@@ -62,7 +62,7 @@ function resources.collect_surface_resources(surface)
 
     patch_tracker[resource_name][pos_key].entity_count = patch_tracker[resource_name][pos_key].entity_count + 1
     patch_tracker[resource_name][pos_key].total_amount = patch_tracker[resource_name][pos_key].total_amount +
-    entity.amount
+        entity.amount
   end
 
   -- Store patch information
