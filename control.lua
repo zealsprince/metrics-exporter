@@ -219,7 +219,7 @@ end
 -- Register event handlers on init (new game)
 script.on_init(function()
   -- Initialize settings in global table
-  if not global.metrics_settings then
+  if global and not global.metrics_settings then
     global.metrics_settings = {}
     for key, value in pairs(DEFAULT_SETTINGS) do
       global.metrics_settings[key] = value
@@ -238,7 +238,7 @@ end)
 -- Handle mod configuration changes (updates, etc.)
 script.on_configuration_changed(function(event)
   -- Re-initialize settings if they don't exist
-  if not global.metrics_settings then
+  if global and not global.metrics_settings then
     global.metrics_settings = {}
     for key, value in pairs(DEFAULT_SETTINGS) do
       global.metrics_settings[key] = value
