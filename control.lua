@@ -1,149 +1,120 @@
--- Configuration
-local EXPORT_INTERVAL_TICKS = 60 * 60 -- 1 minute in ticks (60 ticks/second * 60 seconds)
-local EXPORT_TO_FILE = true           -- Set to true to write to script-output folder for easy S3 upload
+-- Global settings (stored in global table for persistence)
+local DEFAULT_SETTINGS = {
+  auto_export_enabled = true,   -- Whether automatic exports are enabled
+  export_interval_seconds = 30, -- How often to export (in seconds)
+  file_output_enabled = true,   -- Whether to write files to disk
+  admin_only_control = true     -- Whether only admins can change export settings
+}
 
-local function get_comprehensive_factory_state()
-  local state = {
-    timestamp = game.tick,
-    game_time = math.floor(game.tick / 60), -- Game time in seconds
-    surfaces = {}
-  }
+-- Import the modular metrics system and logging
+local metrics = require("metrics.init")
+local logging = require("metrics.logging")
 
-  for _, surface in pairs(game.surfaces) do
-    local surface_data = {
-      name = surface.name,
-      entities = {
-        assembling_machines = {},
-        mining_drills = {},
-        inserters = {},
-        transport_belts = {},
-        electric_poles = {},
-        boilers = {},
-        generators = {},
-        labs = {},
-        furnaces = {}
-      },
-      statistics = {
-        pollution = surface.get_total_pollution(),
-        entity_count = surface.count_entities_filtered {}
-      }
-    }
-
-    -- Assembling machines
-    for _, entity in pairs(surface.find_entities_filtered { type = "assembling-machine" }) do
-      table.insert(surface_data.entities.assembling_machines, {
-        unit_number = entity.unit_number,
-        name = entity.name,
-        position = { x = entity.position.x, y = entity.position.y },
-        recipe = entity.get_recipe() and entity.get_recipe().name or nil,
-        status = tostring(entity.status),
-        productivity_bonus = entity.productivity_bonus,
-        speed_bonus = entity.speed_bonus,
-        energy_usage = entity.prototype.energy_usage
-      })
-    end
-
-    -- Mining drills
-    for _, entity in pairs(surface.find_entities_filtered { type = "mining-drill" }) do
-      table.insert(surface_data.entities.mining_drills, {
-        unit_number = entity.unit_number,
-        name = entity.name,
-        position = { x = entity.position.x, y = entity.position.y },
-        status = tostring(entity.status),
-        mining_target = entity.mining_target and entity.mining_target.name or nil,
-        productivity_bonus = entity.productivity_bonus,
-        speed_bonus = entity.speed_bonus
-      })
-    end
-
-    -- Power generation
-    for _, entity in pairs(surface.find_entities_filtered { type = "generator" }) do
-      table.insert(surface_data.entities.generators, {
-        unit_number = entity.unit_number,
-        name = entity.name,
-        position = { x = entity.position.x, y = entity.position.y },
-        status = tostring(entity.status)
-      })
-    end
-
-    -- Labs for research progress
-    for _, entity in pairs(surface.find_entities_filtered { type = "lab" }) do
-      table.insert(surface_data.entities.labs, {
-        unit_number = entity.unit_number,
-        name = entity.name,
-        position = { x = entity.position.x, y = entity.position.y },
-        status = tostring(entity.status)
-      })
-    end
-
-    -- Furnaces for smelting operations
-    for _, entity in pairs(surface.find_entities_filtered { type = "furnace" }) do
-      table.insert(surface_data.entities.furnaces, {
-        unit_number = entity.unit_number,
-        name = entity.name,
-        position = { x = entity.position.x, y = entity.position.y },
-        status = tostring(entity.status),
-        recipe = entity.get_recipe() and entity.get_recipe().name or nil,
-        productivity_bonus = entity.productivity_bonus,
-        speed_bonus = entity.speed_bonus,
-        energy_usage = entity.prototype.energy_usage
-      })
-    end
-
-    state.surfaces[surface.name] = surface_data
+-- Helper functions for settings management
+local function get_settings()
+  -- Ensure global table exists (it might not during early game lifecycle)
+  if not global then
+    return DEFAULT_SETTINGS -- Return defaults if global not available
   end
 
-  -- Add global statistics
-  state.statistics = {
-    total_entities = 0,
-    forces = {}
-  }
-  for _, force in pairs(game.forces) do
-    if force.name ~= "neutral" then
-      local force_data = {
-        name = force.name,
-        technologies_researched = 0,
-        manual_mining_speed_modifier = force.manual_mining_speed_modifier,
-        manual_crafting_speed_modifier = force.manual_crafting_speed_modifier,
-        rockets_launched = force.rockets_launched,
-        research_enabled = force.research_enabled
-      }
-
-      -- Count researched technologies
-      for _, tech in pairs(force.technologies) do
-        if tech.researched then
-          force_data.technologies_researched = force_data.technologies_researched + 1
-        end
-      end
-
-      -- Current research
-      if force.current_research then
-        force_data.current_research = {
-          name = force.current_research.name,
-          progress = force.research_progress
-        }
-      end
-      state.statistics.forces[force.name] = force_data
+  if not global.metrics_settings then
+    global.metrics_settings = {}
+    for key, value in pairs(DEFAULT_SETTINGS) do
+      global.metrics_settings[key] = value
     end
   end
-  -- Add evolution factor for enemy forces (if they exist)
-  -- Note: Skipping evolution factor for now due to API issues
-  state.statistics.evolution_factor = 0
-
-  return state
+  return global.metrics_settings
 end
 
-local function export_state(command)
+-- Ensure settings are initialized (safe to call anytime)
+local function ensure_settings_initialized()
+  if global and not global.metrics_settings then
+    get_settings() -- This will initialize settings if global is available
+  end
+end
+
+local function is_admin_or_allowed(command)
+  if not command or not command.player_index then
+    return true -- Console command
+  end
+
+  local player = game.get_player(command.player_index)
+  local settings = get_settings()
+
+  -- If we can't access settings, default to admin-only for safety
+  local admin_only = settings.admin_only_control
+  if admin_only == nil then
+    admin_only = DEFAULT_SETTINGS.admin_only_control
+  end
+
+  if admin_only and not player.admin then
+    return false
+  end
+
+  return true
+end
+
+local function update_export_timer()
+  local settings = get_settings()
+
+  -- Clear existing timer
+  script.on_nth_tick(nil)
+
+  -- Set new timer if auto export is enabled
+  if settings.auto_export_enabled then
+    local interval_ticks = settings.export_interval_seconds * 60 -- Convert to ticks
+    script.on_nth_tick(interval_ticks, function(event)
+      -- Only export if auto export is still enabled (settings might have changed)
+      local current_settings = get_settings()
+      if current_settings.auto_export_enabled then
+        -- Use _G to access the global function by name (avoids forward reference)
+        local export_func = _G["export_state"]
+        if export_func then
+          pcall(export_func, nil) -- nil indicates automatic export
+        end
+      end
+    end)
+    logging.info("AUTO_EXPORT", "Automatic export enabled (every " .. settings.export_interval_seconds .. " seconds)")
+  else
+    logging.info("AUTO_EXPORT", "Automatic export disabled")
+  end
+end
+
+-- Safe version for on_load (when global table is not accessible)
+local function update_export_timer_on_load()
+  -- Clear existing timer
+  script.on_nth_tick(nil)
+
+  -- Set default timer - settings will be applied when first export runs
+  local default_interval_ticks = DEFAULT_SETTINGS.export_interval_seconds * 60
+  script.on_nth_tick(default_interval_ticks, function(event)
+    -- Check settings when the timer actually runs (global will be available then)
+    local current_settings = get_settings()
+    if current_settings.auto_export_enabled then
+      -- Use _G to access the global function by name (avoids forward reference)
+      local export_func = _G["export_state"]
+      if export_func then
+        pcall(export_func, nil) -- nil indicates automatic export
+      end
+    end
+  end)
+end
+
+function export_state(command)
   -- Check if command was called by a player and if they are admin
   if command and command.player_index then
     local player = game.get_player(command.player_index)
     if not player.admin then
-      player.print("[METRIC_EXPORTER] Error: Only admins can use this command.")
+      logging.error("AUTH", "Only admins can use this command")
       return
     end
   end
 
-  local state = get_comprehensive_factory_state()
+  -- Determine if this is an automatic or manual export
+  local export_type = command and "manual" or "automatic"
+  logging.info("EXPORT", "Starting " .. export_type .. " export...")
+
+  local state = metrics.collect_all()
   local timestamp = game.tick
   local padded_timestamp = string.format("%012d", timestamp) -- Zero-pad to 12 digits for long-term data collection
   local iso_time = string.format("%04d-%02d-%02d_%02d-%02d-%02d",
@@ -155,8 +126,63 @@ local function export_state(command)
     math.floor(timestamp % 60)                               -- Second
   )
 
+  -- Add debugging information
+  local force_count = 0
+  for _ in pairs(state.global_statistics.forces) do
+    force_count = force_count + 1
+  end
+
+  logging.collection("Collected data for " .. #game.surfaces .. " surfaces and " .. force_count .. " forces")
+
+  -- Check if enhanced metrics are present
+  for surface_name, surface_data in pairs(state.surfaces) do
+    if surface_data.enemies then
+      logging.surface(surface_name, "Enemies data collected")
+
+      -- Add detailed debugging for enemy types
+      if surface_data.enemies.summary then
+        local summary = surface_data.enemies.summary
+        logging.surface(surface_name, "Enemy counts: Spawners=" ..
+          (summary.total_spawners or 0) .. ", Units=" .. (summary.total_units or 0) ..
+          ", Worms=" .. (summary.total_worms or 0) .. ", Nests=" .. (summary.total_nests or 0))
+      end
+
+      -- Check if nests data exists and has content
+      if surface_data.enemies.nests then
+        local nest_types = {}
+        for nest_type, _ in pairs(surface_data.enemies.nests) do
+          table.insert(nest_types, nest_type)
+        end
+        if #nest_types > 0 then
+          logging.surface(surface_name, "Nest types found: " .. table.concat(nest_types, ", "))
+        else
+          logging.surface(surface_name, "Nests table exists but is empty")
+        end
+      else
+        logging.warn("SURFACE:" .. surface_name, "Nests data is nil")
+      end
+    else
+      logging.warn("SURFACE:" .. surface_name, "No enemies data")
+    end
+
+    if surface_data.statistics and surface_data.statistics.resources then
+      logging.surface(surface_name, "Resources data collected")
+    else
+      logging.warn("SURFACE:" .. surface_name, "No resources data")
+    end
+  end
+
+  for force_name, force_data in pairs(state.global_statistics.forces) do
+    if force_data.item_production then
+      logging.force(force_name, "Production data collected")
+    else
+      logging.warn("FORCE:" .. force_name, "No production data")
+    end
+  end
+
   -- Optionally write to organized files
-  if EXPORT_TO_FILE then
+  local settings = get_settings()
+  if settings and settings.file_output_enabled then
     local world_exchange_string = game.get_map_exchange_string()
     -- Create a simple hash of the world identifier for folder naming
     local world_id = tostring(string.len(world_exchange_string))
@@ -166,115 +192,232 @@ local function export_state(command)
     end
     local base_folder = "metrics-exporter/" .. world_id .. "/"
 
-    -- Create metadata file with overall summary
-    local metadata = {
-      export_timestamp = timestamp,
-      game_time_seconds = state.game_time,
-      world_identifier = world_exchange_string, -- Full world identifier stored in metadata
-      surfaces_count = 0,
-      total_entities = {
-        assembling_machines = 0,
-        mining_drills = 0,
-        generators = 0,
-        labs = 0,
-        furnaces = 0
-      },
-      forces = {}
-    }
+    -- Use the new modular export system
+    local exports = metrics.export_organized_data(state, base_folder, padded_timestamp)
 
-    -- Export surface data separately
-    for surface_name, surface_data in pairs(state.surfaces) do
-      metadata.surfaces_count = metadata.surfaces_count + 1
-
-      -- Surface overview
-      local surface_summary = {
-        name = surface_name,
-        timestamp = timestamp,
-        statistics = surface_data.statistics,
-        entity_counts = {
-          assembling_machines = #surface_data.entities.assembling_machines,
-          mining_drills = #surface_data.entities.mining_drills,
-          generators = #surface_data.entities.generators,
-          labs = #surface_data.entities.labs,
-          furnaces = #surface_data.entities.furnaces
-        }
-      }
-
-      metadata.total_entities.assembling_machines = metadata.total_entities.assembling_machines +
-          surface_summary.entity_counts.assembling_machines
-      metadata.total_entities.mining_drills = metadata.total_entities.mining_drills +
-          surface_summary.entity_counts.mining_drills
-      metadata.total_entities.generators = metadata.total_entities.generators + surface_summary.entity_counts.generators
-      metadata.total_entities.labs = metadata.total_entities.labs + surface_summary.entity_counts.labs
-      metadata.total_entities.furnaces = metadata.total_entities.furnaces + surface_summary.entity_counts.furnaces
-      helpers.write_file(base_folder .. "surfaces/surface_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-        helpers.table_to_json(surface_summary))
-      -- Individual entity type files - export entities array directly as root
-      if #surface_data.entities.assembling_machines > 0 then
-        helpers.write_file(
-          base_folder .. "assembling-machines/assembling_machines_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-          helpers.table_to_json(surface_data.entities.assembling_machines))
-      end
-
-      if #surface_data.entities.mining_drills > 0 then
-        helpers.write_file(
-          base_folder .. "mining-drills/mining_drills_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-          helpers.table_to_json(surface_data.entities.mining_drills))
-      end
-
-      if #surface_data.entities.generators > 0 then
-        helpers.write_file(base_folder .. "generators/generators_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-          helpers.table_to_json(surface_data.entities.generators))
-      end
-
-      if #surface_data.entities.labs > 0 then
-        helpers.write_file(base_folder .. "labs/labs_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-          helpers.table_to_json(surface_data.entities.labs))
-      end
-
-      if #surface_data.entities.furnaces > 0 then
-        helpers.write_file(base_folder .. "furnaces/furnaces_" .. surface_name .. "_" .. padded_timestamp .. ".json",
-          helpers.table_to_json(surface_data.entities.furnaces))
-      end
+    -- Write all export files
+    logging.export("Creating " .. #exports .. " export files...")
+    for _, export_data in pairs(exports) do
+      helpers.write_file(export_data.file, helpers.table_to_json(export_data.data))
+      logging.debug("EXPORT", "Exported: " .. export_data.file)
     end
 
-    -- Export force/research data
-    metadata.forces = state.statistics.forces
-    local research_export = {
-      timestamp = timestamp,
-      evolution_factor = state.statistics.evolution_factor,
-      forces = state.statistics.forces
-    }
-    helpers.write_file(base_folder .. "research/research_" .. padded_timestamp .. ".json",
-      helpers.table_to_json(research_export))
-
-    -- Export metadata/summary
-    helpers.write_file(base_folder .. "metadata/metadata_" .. padded_timestamp .. ".json",
-      helpers.table_to_json(metadata))
+    logging.export("Export complete! Files written to script-output folder.")
   end
 end
 
 -- Function to register the periodic export handler
 local function register_export_handler()
-  script.on_nth_tick(EXPORT_INTERVAL_TICKS, function(event)
-    export_state(nil)
-  end)
+  update_export_timer()
+end
+
+-- Safe version for on_load
+local function register_export_handler_on_load()
+  update_export_timer_on_load()
 end
 
 -- Register event handlers on init (new game)
 script.on_init(function()
+  -- Initialize settings in global table
+  if not global.metrics_settings then
+    global.metrics_settings = {}
+    for key, value in pairs(DEFAULT_SETTINGS) do
+      global.metrics_settings[key] = value
+    end
+  end
   register_export_handler()
 end)
 
 -- Register event handlers on load (existing game)
 script.on_load(function()
   -- Only re-setup event handlers - no game access allowed here!
+  -- Use safe version that doesn't access global table
+  register_export_handler_on_load()
+end)
+
+-- Handle mod configuration changes (updates, etc.)
+script.on_configuration_changed(function(event)
+  -- Re-initialize settings if they don't exist
+  if not global.metrics_settings then
+    global.metrics_settings = {}
+    for key, value in pairs(DEFAULT_SETTINGS) do
+      global.metrics_settings[key] = value
+    end
+  end
+
+  -- Refresh the export timer with current settings
   register_export_handler()
+
+  logging.info("CONFIG", "Mod configuration updated, settings refreshed")
 end)
 
 -- Add the command correctly, per the API
 commands.add_command(
-  "metrics-exporter",                            -- command name (no slash)
+  "metrics-exporter-export",                     -- command name (no slash)
   "Export comprehensive factory state as JSON.", -- help text
   export_state                                   -- function to call
+)
+
+-- Add logging control commands
+commands.add_command(
+  "metrics-exporter-debug-on",
+  "Enable metrics debug logging",
+  function(command)
+    logging.enable()
+    logging.info("Debug logging enabled")
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-debug-off",
+  "Disable metrics debug logging",
+  function(command)
+    logging.disable()
+    logging.info("Debug logging disabled")
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-debug-level",
+  "Set logging level (DEBUG, INFO, WARN, ERROR)",
+  function(command)
+    if command.parameter then
+      logging.set_level(command.parameter)
+      logging.info("Log level set to " .. string.upper(command.parameter))
+    else
+      logging.info("Usage: /metrics-exporter-debug-level <level>")
+      logging.info("Available levels: DEBUG, INFO, WARN, ERROR")
+    end
+  end
+)
+
+-- Add export control commands
+commands.add_command(
+  "metrics-exporter-auto",
+  "Enable/disable automatic metrics export (admin only)",
+  function(command)
+    ensure_settings_initialized()
+    if not is_admin_or_allowed(command) then
+      logging.error("AUTH", "Only admins can change export settings")
+      return
+    end
+
+    local settings = get_settings()
+    settings.auto_export_enabled = not settings.auto_export_enabled
+    update_export_timer()
+
+    local status = settings.auto_export_enabled and "enabled" or "disabled"
+    logging.info("EXPORT_CONTROL", "Automatic export " .. status)
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-interval",
+  "Set automatic export interval in seconds (admin only, minimum 10)",
+  function(command)
+    ensure_settings_initialized()
+    if not is_admin_or_allowed(command) then
+      logging.error("AUTH", "Only admins can change export settings")
+      return
+    end
+
+    if not command.parameter then
+      local settings = get_settings()
+      logging.info("EXPORT_CONTROL", "Current export interval: " .. settings.export_interval_seconds .. " seconds")
+      logging.info("EXPORT_CONTROL", "Usage: /metrics-exporter-interval <seconds>")
+      return
+    end
+
+    local interval = tonumber(command.parameter)
+    if not interval or interval < 10 then
+      logging.error("EXPORT_CONTROL", "Invalid interval. Must be a number >= 10 seconds")
+      return
+    end
+
+    local settings = get_settings()
+    settings.export_interval_seconds = interval
+    update_export_timer()
+
+    logging.info("EXPORT_CONTROL", "Export interval set to " .. interval .. " seconds")
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-files",
+  "Enable/disable writing export files to disk (admin only)",
+  function(command)
+    ensure_settings_initialized()
+    if not is_admin_or_allowed(command) then
+      logging.error("AUTH", "Only admins can change export settings")
+      return
+    end
+
+    local settings = get_settings()
+    settings.file_output_enabled = not settings.file_output_enabled
+
+    local status = settings.file_output_enabled and "enabled" or "disabled"
+    logging.info("EXPORT_CONTROL", "File output " .. status)
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-status",
+  "Show current metrics export settings",
+  function(command)
+    ensure_settings_initialized()
+    local settings = get_settings()
+
+    logging.info("SETTINGS", "=== Metrics Exporter Status ===")
+    logging.info("SETTINGS", "Auto export: " .. (settings.auto_export_enabled and "ENABLED" or "DISABLED"))
+    logging.info("SETTINGS", "Export interval: " .. settings.export_interval_seconds .. " seconds")
+    logging.info("SETTINGS", "File output: " .. (settings.file_output_enabled and "ENABLED" or "DISABLED"))
+    logging.info("SETTINGS", "Admin only control: " .. (settings.admin_only_control and "YES" or "NO"))
+
+    if command and command.player_index then
+      local player = game.get_player(command.player_index)
+      local can_control = is_admin_or_allowed(command)
+      logging.info("SETTINGS", "You can control settings: " .. (can_control and "YES" or "NO"))
+    end
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-help",
+  "Show all available metrics exporter commands",
+  function(command)
+    ensure_settings_initialized()
+    logging.info("HELP", "=== Metrics Exporter Commands ===")
+    logging.info("HELP", "/metrics-exporter-export - Export metrics now (admin only)")
+    logging.info("HELP", "/metrics-exporter-status - Show current export settings")
+    logging.info("HELP", "/metrics-exporter-auto - Enable/disable automatic exports (admin only)")
+    logging.info("HELP", "/metrics-exporter-interval <seconds> - Set export interval (admin only)")
+    logging.info("HELP", "/metrics-exporter-files - Enable/disable file writing (admin only)")
+    logging.info("HELP", "/metrics-exporter-refresh - Refresh automatic export timer (admin only)")
+    logging.info("HELP", "/metrics-exporter-debug-on - Enable debug logging")
+    logging.info("HELP", "/metrics-exporter-debug-off - Disable debug logging")
+    logging.info("HELP", "/metrics-exporter-debug-level <level> - Set log level")
+    logging.info("HELP", "/metrics-exporter-help - Show this help")
+
+    if command and command.player_index then
+      local can_control = is_admin_or_allowed(command)
+      if not can_control then
+        logging.info("HELP", "Note: Commands marked (admin only) require admin privileges")
+      end
+    end
+  end
+)
+
+commands.add_command(
+  "metrics-exporter-refresh",
+  "Refresh the automatic export timer (admin only)",
+  function(command)
+    ensure_settings_initialized()
+    if not is_admin_or_allowed(command) then
+      logging.error("AUTH", "Only admins can refresh the timer")
+      return
+    end
+
+    update_export_timer()
+    logging.info("EXPORT_CONTROL", "Export timer refreshed")
+  end
 )
